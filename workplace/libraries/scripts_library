@@ -1,0 +1,6 @@
+ram_record GET|./ram_record.sh {{VSS}} {{KVNR_LIST}} GET
+
+ram_record SET|./ram_record.sh {{VSS}} {{KVNR_LIST}} SET \
+| db3 -e prod -r tk
+
+ram_record LOG|./ram_record.sh {{VSS}} {{KVNR_LIST}} LOG

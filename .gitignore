@@ -1,0 +1,7 @@
+# compiled binary
+/tuirunner
+
+# per-user runtime state (last session, run history, favorites) —
+# machine/user-specific, not project source
+/history.yaml
+/*/favorites.yaml
