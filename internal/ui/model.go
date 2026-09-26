@@ -24,11 +24,36 @@ const (
 
 const fieldInputWidth = 40
 
+// listSuffix marks a variable as a source list (e.g. "KVNR_LIST"): it
+// automatically grows two derived fields, kept in sync live as its value
+// changes — see syncDerivedFields.
+const listSuffix = "_LIST"
+const sqlSuffix = "_SQL"
+
+// FieldKind distinguishes a normal editable field from the two kinds
+// auto-derived from a "<X>_LIST" field: "<X>" (FieldDropdown, picks one
+// value out of the comma-separated list) and "<X>_LIST_SQL"
+// (FieldComputed, the list rendered as a SQL IN-clause tuple).
+type FieldKind int
+
+const (
+	FieldText FieldKind = iota
+	FieldDropdown
+	FieldComputed
+)
+
 // Field is one entry in the session variable pool / input-area form.
 type Field struct {
 	Name     string
 	MustHave bool
+	Kind     FieldKind
 	Input    textinput.Model
+
+	// Options and SelectedIndex are only meaningful for FieldDropdown:
+	// the source list's current comma-split values, and which one is
+	// currently chosen.
+	Options       []string
+	SelectedIndex int
 }
 
 // ListItem is one row of a rendered (favorite-pinned, filtered) script
@@ -123,12 +148,18 @@ func NewModel(root string, profile *store.Profile, hist store.History, positiona
 		}
 		m.addField(name, val, true)
 	}
+	// Sync now so derived names (e.g. "KVNR", "KVNR_LIST_SQL" from a
+	// must-have "KVNR_LIST") already exist before the loop below decides
+	// what still needs adding as a plain ad-hoc field.
+	m.syncDerivedFields()
 	for _, pair := range hist.Vars {
 		if m.hasField(pair.Name) {
 			continue
 		}
 		m.addField(pair.Name, pair.Value, false)
 	}
+	m.syncDerivedFields()
+	m.restoreDropdownSelections(hist.Vars)
 
 	if hist.Profile == profile.Name && hist.Library != "" {
 		for i, lib := range profile.Libraries {
@@ -175,11 +206,24 @@ func (m *Model) valueOf(name string) string {
 }
 
 func (m *Model) addField(name, value string, mustHave bool) {
+	m.fields = append(m.fields, Field{Name: name, MustHave: mustHave, Kind: FieldText, Input: newFieldInput(value)})
+}
+
+func newFieldInput(value string) textinput.Model {
 	ti := textinput.New()
 	ti.Prompt = ""
 	ti.Width = fieldInputWidth
 	ti.SetValue(value)
-	m.fields = append(m.fields, Field{Name: name, MustHave: mustHave, Input: ti})
+	return ti
+}
+
+// currentField returns a pointer to the currently focused field in the
+// input area, or nil if none (out of range / no fields).
+func (m *Model) currentField() *Field {
+	if m.inputIndex < 0 || m.inputIndex >= len(m.fields) {
+		return nil
+	}
+	return &m.fields[m.inputIndex]
 }
 
 func (m *Model) valuesMap() map[string]string {
@@ -224,17 +268,50 @@ func (m *Model) blurAllFields() {
 	}
 }
 
-// ensureInputFocusValid clamps inputIndex into range and focuses it. Used
-// whenever focus moves onto the input area.
+// ensureInputFocusValid clamps inputIndex into range and focuses it,
+// skipping past any read-only FieldComputed field (nothing to edit
+// there). Used whenever focus moves onto the input area.
 func (m *Model) ensureInputFocusValid() {
 	if len(m.fields) == 0 {
 		m.inputIndex = -1
 		return
 	}
-	if m.inputIndex < 0 || m.inputIndex >= len(m.fields) {
-		m.inputIndex = 0
+	if m.inputIndex < 0 || m.inputIndex >= len(m.fields) || m.fields[m.inputIndex].Kind == FieldComputed {
+		for i, f := range m.fields {
+			if f.Kind != FieldComputed {
+				m.focusField(i)
+				return
+			}
+		}
+		m.inputIndex = -1
+		m.blurAllFields()
+		return
 	}
 	m.focusField(m.inputIndex)
+}
+
+// moveInputFocus shifts focus by delta fields, skipping FieldComputed
+// entries, and drops focus back to the nav area if it would move past
+// either end.
+func (m *Model) moveInputFocus(delta int) {
+	if len(m.fields) == 0 {
+		m.focus = FocusNav
+		m.blurAllFields()
+		return
+	}
+	i := m.inputIndex
+	for {
+		i += delta
+		if i < 0 || i >= len(m.fields) {
+			m.focus = FocusNav
+			m.blurAllFields()
+			return
+		}
+		if m.fields[i].Kind != FieldComputed {
+			m.focusField(i)
+			return
+		}
+	}
 }
 
 // ---- nav / library helpers ----
@@ -408,6 +485,7 @@ func (m *Model) switchProfile(name string) {
 	for _, mh := range p.MustHave {
 		m.addField(mh, "", true)
 	}
+	m.syncDerivedFields()
 	m.activeTab = 0
 	m.selection = map[string]string{}
 	m.filterMode = false
@@ -484,12 +562,15 @@ func (m *Model) restoreRun(e store.HistoryEntry) {
 		}
 		m.addField(name, val, true)
 	}
+	m.syncDerivedFields()
 	for _, pair := range e.Vars {
 		if m.hasField(pair.Name) {
 			continue
 		}
 		m.addField(pair.Name, pair.Value, false)
 	}
+	m.syncDerivedFields()
+	m.restoreDropdownSelections(e.Vars)
 
 	m.activeTab = 0
 	m.selection = map[string]string{}
@@ -524,6 +605,7 @@ func (m *Model) confirmAddMissingVars() {
 			m.addField(name, "", false)
 		}
 	}
+	m.syncDerivedFields()
 	if len(names) > 0 {
 		m.focus = FocusInput
 		if idx := m.fieldIndex(names[0]); idx >= 0 {
@@ -581,6 +663,174 @@ func (m *Model) buildHistory() store.History {
 
 func (m *Model) saveHistory() {
 	m.saveErr = m.buildHistory().Save(m.root)
+}
+
+// ---- "_LIST" derived fields ----
+
+// splitListValue splits a comma-separated _LIST value into trimmed,
+// non-empty items.
+func splitListValue(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// sqlInList renders items as a SQL IN-clause tuple, e.g.
+// ('a','b','c'), quoting each item and escaping any embedded quote.
+// Returns "" if items is empty.
+func sqlInList(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(items))
+	for i, it := range items {
+		quoted[i] = "'" + strings.ReplaceAll(it, "'", "''") + "'"
+	}
+	return "(" + strings.Join(quoted, ",") + ")"
+}
+
+// hasNonDerivedField reports whether name belongs to a real,
+// user-facing FieldText entry (as opposed to a FieldDropdown/FieldComputed
+// row syncDerivedFields itself manages) — used to avoid clobbering a
+// same-named field the user (or the profile) created independently.
+func (m *Model) hasNonDerivedField(name string) bool {
+	for _, f := range m.fields {
+		if f.Name == name && f.Kind == FieldText {
+			return true
+		}
+	}
+	return false
+}
+
+// syncDerivedFields keeps two auto-derived fields in lockstep with every
+// real "<X>_LIST" field currently in the pool: "<X>" (a dropdown over the
+// list's comma-separated values) and "<X>_LIST_SQL" (those values as a
+// SQL IN-clause tuple). Fields are created the moment their source
+// "_LIST" field appears, updated live as its value changes, and removed
+// if the source disappears (e.g. deleted, or dropped by Ctrl+N). Call
+// this after anything that adds, removes or edits a field.
+func (m *Model) syncDerivedFields() {
+	type source struct {
+		name    string
+		options []string
+	}
+	var sources []source
+	for _, f := range m.fields {
+		if f.Kind == FieldText && strings.HasSuffix(f.Name, listSuffix) {
+			sources = append(sources, source{name: f.Name, options: splitListValue(f.Input.Value())})
+		}
+	}
+
+	wantDropdown := map[string]source{}
+	wantComputed := map[string]source{}
+	for _, s := range sources {
+		dName := strings.TrimSuffix(s.name, listSuffix)
+		qName := s.name + sqlSuffix
+		if !m.hasNonDerivedField(dName) {
+			wantDropdown[dName] = s
+		}
+		if !m.hasNonDerivedField(qName) {
+			wantComputed[qName] = s
+		}
+	}
+
+	kept := m.fields[:0:0]
+	present := map[string]bool{}
+	for _, f := range m.fields {
+		switch f.Kind {
+		case FieldDropdown:
+			s, ok := wantDropdown[f.Name]
+			if !ok {
+				continue // orphaned: its source _LIST field is gone
+			}
+			prevVal := ""
+			if f.SelectedIndex >= 0 && f.SelectedIndex < len(f.Options) {
+				prevVal = f.Options[f.SelectedIndex]
+			}
+			f.Options = s.options
+			f.SelectedIndex = 0
+			for i, o := range s.options {
+				if o == prevVal {
+					f.SelectedIndex = i
+					break
+				}
+			}
+			val := ""
+			if len(s.options) > 0 {
+				val = s.options[f.SelectedIndex]
+			}
+			f.Input.SetValue(val)
+			present[f.Name] = true
+		case FieldComputed:
+			s, ok := wantComputed[f.Name]
+			if !ok {
+				continue // orphaned
+			}
+			f.Input.SetValue(sqlInList(s.options))
+			present[f.Name] = true
+		}
+		kept = append(kept, f)
+	}
+	m.fields = kept
+
+	for _, s := range sources {
+		dName := strings.TrimSuffix(s.name, listSuffix)
+		if _, ok := wantDropdown[dName]; ok && !present[dName] {
+			val := ""
+			if len(s.options) > 0 {
+				val = s.options[0]
+			}
+			m.fields = append(m.fields, Field{
+				Name: dName, Kind: FieldDropdown,
+				Options: s.options, SelectedIndex: 0,
+				Input: newFieldInput(val),
+			})
+		}
+		qName := s.name + sqlSuffix
+		if _, ok := wantComputed[qName]; ok && !present[qName] {
+			m.fields = append(m.fields, Field{
+				Name: qName, Kind: FieldComputed,
+				Input: newFieldInput(sqlInList(s.options)),
+			})
+		}
+	}
+
+	if m.inputIndex >= len(m.fields) {
+		m.inputIndex = len(m.fields) - 1
+	}
+}
+
+// restoreDropdownSelections re-selects each dropdown field's option to
+// match its previously-saved value in vars, if that value is still
+// among the field's current options — used after a history/session
+// restore so the same list item stays picked instead of resetting to
+// the first option.
+func (m *Model) restoreDropdownSelections(vars store.VarList) {
+	for i := range m.fields {
+		if m.fields[i].Kind != FieldDropdown {
+			continue
+		}
+		saved, ok := vars.Get(m.fields[i].Name)
+		if !ok {
+			continue
+		}
+		for idx, opt := range m.fields[i].Options {
+			if opt == saved {
+				m.fields[i].SelectedIndex = idx
+				m.fields[i].Input.SetValue(opt)
+				break
+			}
+		}
+	}
 }
 
 func clamp(v, lo, hi int) int {

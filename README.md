@@ -172,11 +172,31 @@ present; other fields only appear once you explicitly add them.
 | `Ctrl+R` | clear every field's value (fields stay) |
 | `Ctrl+N` | new session — drop every field except must-haves, and blank those |
 | `Ctrl+A` | add a new variable by name |
-| `Ctrl+D` | delete the focused field (no-op on a must-have field) |
+| `Ctrl+D` | delete the focused field (no-op on a must-have field, or on an auto-derived `_LIST` field — see below) |
+| `←` / `→` | on an auto-derived dropdown field, pick the previous/next value (on an ordinary text field, moves the cursor as usual) |
 
 While you move through scripts, any variable name that the *currently
 selected* script actually uses is highlighted (violet) so you can see
 at a glance what it needs — this updates live as you change selection.
+
+#### `_LIST` variables auto-derive two more fields
+
+Any variable whose name ends in `_LIST` (must-have or ad-hoc, e.g. the
+default profile's `KVNR_LIST`) automatically grows two extra, read/pick
+-only fields the moment it exists, kept live as you edit it:
+
+- **`<name without _LIST>`** — a dropdown over the comma-separated
+  values (e.g. `KVNR_LIST = 1231,1231231,12312` gives a `KVNR` field you
+  cycle through with `←`/`→`). Use this in a script wherever it needs
+  exactly one of the values, e.g. `{{KVNR}}`.
+- **`<name>_SQL`** — the same values rendered as a SQL `IN`-clause
+  tuple, e.g. `KVNR_LIST_SQL` becomes `('1231','1231231','12312')`.
+  Handy for `WHERE kvnr IN {{KVNR_LIST_SQL}}`.
+
+Both are marked `(auto)`/shown dimmed in the input area, aren't directly
+typeable, and disappear again if their source `_LIST` field is ever
+removed (must-have `_LIST` fields can't be removed, so theirs are
+permanent for the profile).
 
 ### Running a script
 

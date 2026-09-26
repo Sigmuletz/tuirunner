@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"tuirunner/internal/library"
@@ -94,7 +95,7 @@ func dividerLine(width int) string {
 func (m *Model) renderInputLines(width int) []string {
 	var lines []string
 	header := headingStyle.Render("VARIABLES") + "  " +
-		dimStyle.Render("(Tab: focus fields | Ctrl+R clear | Ctrl+N new | Ctrl+A add | Ctrl+D delete)")
+		dimStyle.Render("(Tab: focus fields | ←/→ pick dropdown | Ctrl+R clear | Ctrl+N new | Ctrl+A add | Ctrl+D delete)")
 	lines = append(lines, padLine(header, width))
 
 	if len(m.fields) == 0 {
@@ -124,6 +125,9 @@ func (m *Model) renderInputLines(width int) []string {
 		if f.MustHave {
 			label += "*"
 		}
+		if f.Kind == FieldComputed {
+			label += " (auto)"
+		}
 		label += ":"
 		for len(label) < labelWidth+1 {
 			label += " "
@@ -142,7 +146,22 @@ func (m *Model) renderInputLines(width int) []string {
 			labelRendered = lineStyle.Render(label)
 		}
 
-		row := "  " + labelRendered + " " + f.Input.View()
+		var valueRendered string
+		switch f.Kind {
+		case FieldDropdown:
+			if len(f.Options) == 0 {
+				valueRendered = dimStyle.Render(fmt.Sprintf("(fill %s_LIST first)", f.Name))
+			} else {
+				valueRendered = dimStyle.Render("◂ ") + f.Input.View() +
+					dimStyle.Render(fmt.Sprintf(" ▸  (%d/%d)", f.SelectedIndex+1, len(f.Options)))
+			}
+		case FieldComputed:
+			valueRendered = dimStyle.Render(f.Input.Value())
+		default:
+			valueRendered = f.Input.View()
+		}
+
+		row := "  " + labelRendered + " " + valueRendered
 		lines = append(lines, padLine(row, width))
 	}
 

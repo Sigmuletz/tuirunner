@@ -183,23 +183,34 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 
 	switch key {
 	case "tab":
-		if len(m.fields) == 0 || m.inputIndex >= len(m.fields)-1 {
-			m.focus = FocusNav
-			m.blurAllFields()
-			return nil
-		}
-		m.focusField(m.inputIndex + 1)
+		m.moveInputFocus(1)
 	case "shift+tab":
-		if len(m.fields) == 0 || m.inputIndex <= 0 {
-			m.focus = FocusNav
-			m.blurAllFields()
-			return nil
+		m.moveInputFocus(-1)
+	case "left", "right":
+		cur := m.currentField()
+		switch {
+		case cur == nil:
+		case cur.Kind == FieldDropdown && len(cur.Options) > 0:
+			delta := 1
+			if key == "left" {
+				delta = -1
+			}
+			cur.SelectedIndex = clamp(cur.SelectedIndex+delta, 0, len(cur.Options)-1)
+			cur.Input.SetValue(cur.Options[cur.SelectedIndex])
+		case cur.Kind == FieldText:
+			// Not a dropdown: let the text input handle its own
+			// cursor movement as usual.
+			var cmd tea.Cmd
+			cur.Input, cmd = cur.Input.Update(msg)
+			return cmd
 		}
-		m.focusField(m.inputIndex - 1)
 	case "ctrl+r":
 		for i := range m.fields {
-			m.fields[i].Input.SetValue("")
+			if m.fields[i].Kind == FieldText {
+				m.fields[i].Input.SetValue("")
+			}
 		}
+		m.syncDerivedFields()
 	case "ctrl+n":
 		kept := m.fields[:0:0]
 		for _, f := range m.fields {
@@ -209,23 +220,26 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		m.fields = kept
+		m.syncDerivedFields()
 		m.ensureInputFocusValid()
 	case "ctrl+a":
 		m.addVarMode = true
 		m.addVarInput.SetValue("")
 		m.addVarInput.Focus()
 	case "ctrl+d":
-		if len(m.fields) > 0 && m.inputIndex >= 0 && m.inputIndex < len(m.fields) && !m.fields[m.inputIndex].MustHave {
+		if cur := m.currentField(); cur != nil && cur.Kind == FieldText && !cur.MustHave {
 			m.fields = append(m.fields[:m.inputIndex], m.fields[m.inputIndex+1:]...)
+			m.syncDerivedFields()
 			if m.inputIndex >= len(m.fields) {
 				m.inputIndex = len(m.fields) - 1
 			}
 			m.ensureInputFocusValid()
 		}
 	default:
-		if m.inputIndex >= 0 && m.inputIndex < len(m.fields) {
+		if cur := m.currentField(); cur != nil && cur.Kind == FieldText {
 			var cmd tea.Cmd
-			m.fields[m.inputIndex].Input, cmd = m.fields[m.inputIndex].Input.Update(msg)
+			cur.Input, cmd = cur.Input.Update(msg)
+			m.syncDerivedFields()
 			return cmd
 		}
 	}
@@ -248,7 +262,9 @@ func (m *Model) handleAddVarKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		m.addField(name, "", false)
-		m.focusField(len(m.fields) - 1)
+		idx := len(m.fields) - 1
+		m.syncDerivedFields()
+		m.focusField(idx)
 	case "esc":
 		m.addVarMode = false
 		m.addVarInput.SetValue("")
