@@ -12,11 +12,15 @@ import (
 
 // defaultMustHave is the must-have variable set that ships with the
 // "default" profile the first time tuirunner creates its vars.yaml.
-var defaultMustHave = []string{"VSS", "KVNR_LIST"}
+var defaultMustHave = []VarDef{{Name: "VSS"}, {Name: "KVNR_LIST"}}
 
-// VarsFile is the per-profile vars.yaml contents.
+// VarsFile is the per-profile vars.yaml contents. must_have variables
+// must be filled before anything runs; optional ones are always shown in
+// the form too, but only need a value when a script actually uses them.
+// Either kind may carry a default value and premade choices (see VarDef).
 type VarsFile struct {
-	MustHave []string `yaml:"must_have"`
+	MustHave []VarDef `yaml:"must_have"`
+	Optional []VarDef `yaml:"optional,omitempty"`
 }
 
 // FavoritesFile is the per-profile favorites.yaml contents: library
@@ -53,13 +57,28 @@ func (f *FavoritesFile) Toggle(libKey, entryName string) bool {
 }
 
 // Profile is a fully loaded profile: its libraries, favorites and
-// must-have variable configuration.
+// declared variable configuration.
 type Profile struct {
 	Name      string
 	Dir       string
 	Libraries []library.Library
 	Favorites FavoritesFile
 	MustHave  []string
+	// Optional lists the names of vars.yaml's optional variables, in
+	// file order.
+	Optional []string
+	// Defs holds the default/choices for every declared variable (must
+	// have or optional), keyed by name.
+	Defs map[string]VarDef
+}
+
+// Def returns the vars.yaml definition for name (the zero VarDef, with no
+// default or choices, if it isn't declared).
+func (p *Profile) Def(name string) VarDef {
+	if d, ok := p.Defs[name]; ok {
+		return d
+	}
+	return VarDef{Name: name}
 }
 
 func profileDir(root, name string) string {
@@ -93,13 +112,25 @@ func LoadProfile(root, name string) (*Profile, error) {
 		return nil, err
 	}
 
-	return &Profile{
+	p := &Profile{
 		Name:      name,
 		Dir:       dir,
 		Libraries: libs,
 		Favorites: ff,
-		MustHave:  vf.MustHave,
-	}, nil
+		Defs:      map[string]VarDef{},
+	}
+	for _, d := range vf.MustHave {
+		p.MustHave = append(p.MustHave, d.Name)
+		p.Defs[d.Name] = d
+	}
+	for _, d := range vf.Optional {
+		if _, dup := p.Defs[d.Name]; dup {
+			continue // already declared as must_have (or listed twice)
+		}
+		p.Optional = append(p.Optional, d.Name)
+		p.Defs[d.Name] = d
+	}
+	return p, nil
 }
 
 func varsPath(dir string) string      { return filepath.Join(dir, "vars.yaml") }
@@ -110,7 +141,7 @@ func loadOrCreateVars(dir, profileName string) (VarsFile, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		vf := VarsFile{}
 		if profileName == "default" {
-			vf.MustHave = append([]string{}, defaultMustHave...)
+			vf.MustHave = append([]VarDef{}, defaultMustHave...)
 		}
 		if err := writeYAML(path, vf); err != nil {
 			return vf, err

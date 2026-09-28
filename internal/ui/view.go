@@ -95,7 +95,7 @@ func dividerLine(width int) string {
 func (m *Model) renderInputLines(width int) []string {
 	var lines []string
 	header := headingStyle.Render("VARIABLES") + "  " +
-		dimStyle.Render("(Tab: focus fields | ←/→ pick dropdown | Ctrl+R clear | Ctrl+N new | Ctrl+A add | Ctrl+D delete)")
+		dimStyle.Render("(Tab: focus fields | ←/→ pick dropdown | ↑/↓ choices | Ctrl+R clear | Ctrl+N new | Ctrl+A add | Ctrl+D delete)")
 	lines = append(lines, padLine(header, width))
 
 	if len(m.fields) == 0 {
@@ -159,6 +159,9 @@ func (m *Model) renderInputLines(width int) []string {
 			valueRendered = dimStyle.Render(f.Input.Value())
 		default:
 			valueRendered = f.Input.View()
+			if len(f.Choices) > 0 {
+				valueRendered += "  " + renderChoices(f.Choices, f.Input.Value())
+			}
 		}
 
 		row := "  " + labelRendered + " " + valueRendered
@@ -171,6 +174,20 @@ func (m *Model) renderInputLines(width int) []string {
 	}
 
 	return lines
+}
+
+// renderChoices shows a field's premade choices as a dim "a | b | c"
+// hint, with the one matching the current value highlighted.
+func renderChoices(choices []string, current string) string {
+	parts := make([]string, len(choices))
+	for i, c := range choices {
+		if c == current {
+			parts[i] = lineStyle.Bold(true).Render(c)
+		} else {
+			parts[i] = dimStyle.Render(c)
+		}
+	}
+	return dimStyle.Render("[") + strings.Join(parts, dimStyle.Render(" | ")) + dimStyle.Render("]")
 }
 
 // ---- nav area ----

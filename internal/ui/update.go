@@ -204,6 +204,15 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 			cur.Input, cmd = cur.Input.Update(msg)
 			return cmd
 		}
+	case "up", "down":
+		if cur := m.currentField(); cur != nil && cur.Kind == FieldText {
+			delta := 1
+			if key == "up" {
+				delta = -1
+			}
+			cycleChoice(cur, delta)
+			m.syncDerivedFields()
+		}
 	case "ctrl+r":
 		for i := range m.fields {
 			if m.fields[i].Kind == FieldText {
@@ -212,22 +221,14 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		m.syncDerivedFields()
 	case "ctrl+n":
-		kept := m.fields[:0:0]
-		for _, f := range m.fields {
-			if f.MustHave {
-				f.Input.SetValue("")
-				kept = append(kept, f)
-			}
-		}
-		m.fields = kept
-		m.syncDerivedFields()
+		m.resetFields()
 		m.ensureInputFocusValid()
 	case "ctrl+a":
 		m.addVarMode = true
 		m.addVarInput.SetValue("")
 		m.addVarInput.Focus()
 	case "ctrl+d":
-		if cur := m.currentField(); cur != nil && cur.Kind == FieldText && !cur.MustHave {
+		if cur := m.currentField(); cur != nil && cur.Kind == FieldText && !cur.MustHave && !cur.Optional {
 			m.fields = append(m.fields[:m.inputIndex], m.fields[m.inputIndex+1:]...)
 			m.syncDerivedFields()
 			if m.inputIndex >= len(m.fields) {
@@ -261,7 +262,7 @@ func (m *Model) handleAddVarKey(msg tea.KeyMsg) tea.Cmd {
 			m.focusField(idx)
 			return nil
 		}
-		m.addField(name, "", false)
+		m.addField(name, m.profile.Def(name).Default, false)
 		idx := len(m.fields) - 1
 		m.syncDerivedFields()
 		m.focusField(idx)

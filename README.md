@@ -89,18 +89,45 @@ multi_line_name|first part \
   `_library` stripped (`connect_library` → `connect`), tabs shown in
   alphabetical order.
 
-### `vars.yaml` — must-have variables
+### `vars.yaml` — must-have and optional variables
 
 ```yaml
 must_have:
   - VSS
   - KVNR_LIST
+
+optional:
+  - name: ENV
+    default: prod
+    choices: [prod, preprod, dev]
+  - name: TENANT
+    default: abc
+  - name: DIRECTION
+    choices: [ASC, DESC]
+  - URL
 ```
 
-Variables listed here always appear in the input form for that profile,
-regardless of which script is selected, and must be filled before
-anything in that profile can run. Their order here is also the order of
-positional CLI arguments (see below).
+- **`must_have`** variables always appear in the input form for that
+  profile, regardless of which script is selected, and must be filled
+  before anything in that profile can run. Their order here is also the
+  order of positional CLI arguments (see below).
+- **`optional`** variables also always appear in the form (after the
+  must-haves), but are only required when the selected script actually
+  uses them as a `{{PLACEHOLDER}}`.
+
+Every entry, in either list, is either a bare name or a mapping with:
+
+- **`default`** — the value the field starts with when there's no
+  remembered value for it yet (a new profile, a profile switch, `Ctrl+N`,
+  or a history run that predates the variable). Once you've edited the
+  value, your last-used value is remembered in `history.yaml` as usual.
+- **`choices`** — premade values you can cycle through with `↑`/`↓`
+  while the field is focused. They're only suggestions: the field stays
+  free text, so you can still type anything else. The choices are shown
+  next to the field, with the current one highlighted.
+
+Optional fields can't be removed with `Ctrl+D` (they belong to the
+profile), and `Ctrl+N` resets every declared field back to its default.
 
 ## Running it
 
@@ -164,15 +191,17 @@ in your scrollback. It's split into three stacked areas:
 A shared pool of named values that persists as you move between
 scripts and tabs — fill in `ENV` once, every script that uses `{{ENV}}`
 picks it up. Fields for the profile's must-have variables are always
-present; other fields only appear once you explicitly add them.
+present, and so are its optional ones (pre-filled with their defaults);
+other fields only appear once you explicitly add them.
 
 | Key | Action |
 |---|---|
 | `Tab` / `Shift+Tab` | move between fields (exits back to the scripts area at either end) |
 | `Ctrl+R` | clear every field's value (fields stay) |
-| `Ctrl+N` | new session — drop every field except must-haves, and blank those |
+| `Ctrl+N` | new session — drop every field not declared in `vars.yaml`, and reset the declared ones to their defaults (blank if none) |
 | `Ctrl+A` | add a new variable by name |
-| `Ctrl+D` | delete the focused field (no-op on a must-have field, or on an auto-derived `_LIST` field — see below) |
+| `Ctrl+D` | delete the focused field (no-op on a must-have or optional field, or on an auto-derived `_LIST` field — see below) |
+| `↑` / `↓` | on a field with `choices` in `vars.yaml`, cycle through them (typing free text still works) |
 | `←` / `→` | on an auto-derived dropdown field, pick the previous/next value (on an ordinary text field, moves the cursor as usual) |
 
 While you move through scripts, any variable name that the *currently
@@ -224,4 +253,5 @@ of what's about to run.
 
 Press `p` to open a list of every directory next to the binary that
 looks like a profile (i.e. has a `libraries/` folder). Picking one
-reloads its libraries, favorites and must-have variables from scratch.
+reloads its libraries, favorites and declared (must-have and optional)
+variables from scratch, the latter at their defaults.

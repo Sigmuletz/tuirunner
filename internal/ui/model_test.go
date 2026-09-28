@@ -233,3 +233,100 @@ func TestRestoreDropdownSelections(t *testing.T) {
 		t.Fatalf("restoreDropdownSelections did not select %q: %+v", "c", dd)
 	}
 }
+
+func newDefsModel(t *testing.T, hist store.History) *Model {
+	t.Helper()
+	profile := &store.Profile{
+		Name:      "default",
+		MustHave:  []string{"VSS"},
+		Optional:  []string{"ENV", "TENANT"},
+		Favorites: store.FavoritesFile{Favorites: map[string][]string{}},
+		Defs: map[string]store.VarDef{
+			"VSS":    {Name: "VSS", Default: "v1"},
+			"ENV":    {Name: "ENV", Default: "prod", Choices: []string{"prod", "preprod", "dev"}},
+			"TENANT": {Name: "TENANT"},
+		},
+	}
+	return NewModel("", profile, hist, nil)
+}
+
+func TestOptionalFields_PresentWithDefaults(t *testing.T) {
+	m := newDefsModel(t, store.History{})
+	for name, want := range map[string]string{"VSS": "v1", "ENV": "prod", "TENANT": ""} {
+		f := m.fieldByName(name)
+		if f == nil {
+			t.Fatalf("field %s missing", name)
+		}
+		if got := f.Input.Value(); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if f := m.fieldByName("ENV"); !f.Optional || f.MustHave || len(f.Choices) != 3 {
+		t.Fatalf("ENV field = %+v", f)
+	}
+}
+
+func TestOptionalFields_HistoryWinsOverDefault(t *testing.T) {
+	m := newDefsModel(t, store.History{Vars: store.VarList{{Name: "ENV", Value: "custom"}}})
+	if got := m.valueOf("ENV"); got != "custom" {
+		t.Fatalf("ENV = %q, want history value %q", got, "custom")
+	}
+}
+
+func TestHandleInputKey_UpDownCyclesChoicesButStaysFreeText(t *testing.T) {
+	m := newDefsModel(t, store.History{})
+	m.focus = FocusInput
+	m.focusField(m.fieldIndex("ENV"))
+
+	m.handleInputKey(tea.KeyMsg{Type: tea.KeyDown})
+	if got := m.valueOf("ENV"); got != "preprod" {
+		t.Fatalf("after down, ENV = %q, want preprod", got)
+	}
+	m.handleInputKey(tea.KeyMsg{Type: tea.KeyDown})
+	m.handleInputKey(tea.KeyMsg{Type: tea.KeyDown}) // clamps at last
+	if got := m.valueOf("ENV"); got != "dev" {
+		t.Fatalf("after down x3, ENV = %q, want dev", got)
+	}
+
+	// Free text is still allowed.
+	m.fieldByName("ENV").Input.SetValue("qa")
+	m.handleInputKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	if got := m.valueOf("ENV"); got != "qa2" {
+		t.Fatalf("typed ENV = %q, want qa2", got)
+	}
+	// From a non-choice value, up jumps to the last choice.
+	m.handleInputKey(tea.KeyMsg{Type: tea.KeyUp})
+	if got := m.valueOf("ENV"); got != "dev" {
+		t.Fatalf("after up from free text, ENV = %q, want dev", got)
+	}
+}
+
+func TestCtrlN_ResetsDeclaredFieldsToDefaults(t *testing.T) {
+	m := newDefsModel(t, store.History{})
+	m.addField("EXTRA", "x", false)
+	m.fieldByName("ENV").Input.SetValue("dev")
+	m.fieldByName("VSS").Input.SetValue("changed")
+	m.focus = FocusInput
+	m.focusField(0)
+
+	m.handleInputKey(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if m.hasField("EXTRA") {
+		t.Fatal("ad-hoc field EXTRA should be dropped by Ctrl+N")
+	}
+	if got := m.valueOf("ENV"); got != "prod" {
+		t.Fatalf("ENV = %q, want default prod", got)
+	}
+	if got := m.valueOf("VSS"); got != "v1" {
+		t.Fatalf("VSS = %q, want default v1", got)
+	}
+}
+
+func TestCtrlD_NoOpOnOptionalField(t *testing.T) {
+	m := newDefsModel(t, store.History{})
+	m.focus = FocusInput
+	m.focusField(m.fieldIndex("TENANT"))
+	m.handleInputKey(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if !m.hasField("TENANT") {
+		t.Fatal("Ctrl+D must not delete a declared optional field")
+	}
+}
