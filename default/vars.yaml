@@ -1,3 +1,13 @@
 must_have:
     - VSS
     - KVNR_LIST
+
+# Optional variables: always shown in the form, only required when a
+# script uses them. Each can have a default value and/or premade choices
+# (cycle with Up/Down; free text is still allowed). Example:
+#
+# optional:
+#     - name: ENV
+#       default: prod
+#       choices: [prod, preprod, dev]
+#     - TENANT

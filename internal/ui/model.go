@@ -46,8 +46,16 @@ const (
 type Field struct {
 	Name     string
 	MustHave bool
+	// Optional marks a field declared under vars.yaml's "optional": it is
+	// always present like a must-have, but only needs a value when the
+	// selected script uses it.
+	Optional bool
 	Kind     FieldKind
 	Input    textinput.Model
+
+	// Choices are the premade values vars.yaml offers for this field,
+	// cycled with ↑/↓. The field stays free text; any value is allowed.
+	Choices []string
 
 	// Options and SelectedIndex are only meaningful for FieldDropdown:
 	// the source list's current comma-split values, and which one is
@@ -138,28 +146,7 @@ func NewModel(root string, profile *store.Profile, hist store.History, positiona
 	m.addVarInput.Prompt = "name: "
 	m.addVarInput.Width = fieldInputWidth
 
-	for i, name := range profile.MustHave {
-		val := ""
-		if hv, ok := hist.Vars.Get(name); ok {
-			val = hv
-		}
-		if i < len(positional) {
-			val = positional[i]
-		}
-		m.addField(name, val, true)
-	}
-	// Sync now so derived names (e.g. "KVNR", "KVNR_LIST_SQL" from a
-	// must-have "KVNR_LIST") already exist before the loop below decides
-	// what still needs adding as a plain ad-hoc field.
-	m.syncDerivedFields()
-	for _, pair := range hist.Vars {
-		if m.hasField(pair.Name) {
-			continue
-		}
-		m.addField(pair.Name, pair.Value, false)
-	}
-	m.syncDerivedFields()
-	m.restoreDropdownSelections(hist.Vars)
+	m.loadFields(hist.Vars, positional)
 
 	if hist.Profile == profile.Name && hist.Library != "" {
 		for i, lib := range profile.Libraries {
@@ -206,7 +193,90 @@ func (m *Model) valueOf(name string) string {
 }
 
 func (m *Model) addField(name, value string, mustHave bool) {
-	m.fields = append(m.fields, Field{Name: name, MustHave: mustHave, Kind: FieldText, Input: newFieldInput(value)})
+	m.fields = append(m.fields, Field{
+		Name: name, MustHave: mustHave, Kind: FieldText,
+		Choices: m.profile.Def(name).Choices,
+		Input:   newFieldInput(value),
+	})
+}
+
+// loadFields rebuilds the variable pool from scratch: the profile's
+// must-have fields, then its optional fields, then any other variable in
+// vars as an ad-hoc field. A declared field takes its value from vars
+// when present there, else its vars.yaml default; positional (CLI args)
+// override the must-have values in order.
+func (m *Model) loadFields(vars store.VarList, positional []string) {
+	m.fields = nil
+	declared := func(name string) string {
+		if v, ok := vars.Get(name); ok {
+			return v
+		}
+		return m.profile.Def(name).Default
+	}
+	for i, name := range m.profile.MustHave {
+		val := declared(name)
+		if i < len(positional) {
+			val = positional[i]
+		}
+		m.addField(name, val, true)
+	}
+	for _, name := range m.profile.Optional {
+		m.addField(name, declared(name), false)
+		m.fields[len(m.fields)-1].Optional = true
+	}
+	// Sync now so derived names (e.g. "KVNR", "KVNR_LIST_SQL" from a
+	// must-have "KVNR_LIST") already exist before the loop below decides
+	// what still needs adding as a plain ad-hoc field.
+	m.syncDerivedFields()
+	for _, pair := range vars {
+		if m.hasField(pair.Name) {
+			continue
+		}
+		m.addField(pair.Name, pair.Value, false)
+	}
+	m.syncDerivedFields()
+	m.restoreDropdownSelections(vars)
+}
+
+// resetFields is Ctrl+N's "new session": ad-hoc fields are dropped and
+// every declared (must-have / optional) field goes back to its vars.yaml
+// default (blank if it has none).
+func (m *Model) resetFields() {
+	kept := m.fields[:0:0]
+	for _, f := range m.fields {
+		if f.MustHave || f.Optional {
+			f.Input.SetValue(m.profile.Def(f.Name).Default)
+			kept = append(kept, f)
+		}
+	}
+	m.fields = kept
+	m.syncDerivedFields()
+}
+
+// cycleChoice steps f's value through its premade Choices by delta. A
+// free-text value that isn't one of the choices jumps to the first (down)
+// or last (up) choice.
+func cycleChoice(f *Field, delta int) {
+	if len(f.Choices) == 0 {
+		return
+	}
+	idx := -1
+	for i, c := range f.Choices {
+		if c == f.Input.Value() {
+			idx = i
+			break
+		}
+	}
+	switch {
+	case idx < 0 && delta > 0:
+		idx = 0
+	case idx < 0:
+		idx = len(f.Choices) - 1
+	default:
+		idx = clamp(idx+delta, 0, len(f.Choices)-1)
+	}
+	f.Input.SetValue(f.Choices[idx])
+	f.Input.CursorEnd()
 }
 
 func newFieldInput(value string) textinput.Model {
@@ -481,11 +551,7 @@ func (m *Model) switchProfile(name string) {
 		return
 	}
 	m.profile = p
-	m.fields = nil
-	for _, mh := range p.MustHave {
-		m.addField(mh, "", true)
-	}
-	m.syncDerivedFields()
+	m.loadFields(nil, nil)
 	m.activeTab = 0
 	m.selection = map[string]string{}
 	m.filterMode = false
@@ -554,23 +620,7 @@ func (m *Model) restoreRun(e store.HistoryEntry) {
 		m.profile = p
 	}
 
-	m.fields = nil
-	for _, name := range m.profile.MustHave {
-		val := ""
-		if v, ok := e.Vars.Get(name); ok {
-			val = v
-		}
-		m.addField(name, val, true)
-	}
-	m.syncDerivedFields()
-	for _, pair := range e.Vars {
-		if m.hasField(pair.Name) {
-			continue
-		}
-		m.addField(pair.Name, pair.Value, false)
-	}
-	m.syncDerivedFields()
-	m.restoreDropdownSelections(e.Vars)
+	m.loadFields(e.Vars, nil)
 
 	m.activeTab = 0
 	m.selection = map[string]string{}
@@ -602,7 +652,7 @@ func (m *Model) confirmAddMissingVars() {
 	m.confirmAddVarsOpen = false
 	for _, name := range names {
 		if !m.hasField(name) {
-			m.addField(name, "", false)
+			m.addField(name, m.profile.Def(name).Default, false)
 		}
 	}
 	m.syncDerivedFields()

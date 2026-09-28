@@ -143,3 +143,54 @@ func TestListProfiles(t *testing.T) {
 		t.Fatalf("ListProfiles = %v, want %v", names, want)
 	}
 }
+
+func TestLoadProfile_OptionalVarsWithDefaultsAndChoices(t *testing.T) {
+	root := t.TempDir()
+	setupProfile(t, root, "p")
+	vars := `must_have:
+  - VSS
+  - name: ZONE
+    choices: [z1, z2]
+optional:
+  - name: ENV
+    default: prod
+    choices: [prod, preprod]
+  - TENANT
+  - VSS
+`
+	if err := os.WriteFile(filepath.Join(root, "p", "vars.yaml"), []byte(vars), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := LoadProfile(root, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"VSS", "ZONE"}; !reflect.DeepEqual(p.MustHave, want) {
+		t.Fatalf("MustHave = %v, want %v", p.MustHave, want)
+	}
+	// VSS is already a must-have, so its optional duplicate is ignored.
+	if want := []string{"ENV", "TENANT"}; !reflect.DeepEqual(p.Optional, want) {
+		t.Fatalf("Optional = %v, want %v", p.Optional, want)
+	}
+	if d := p.Def("ENV"); d.Default != "prod" || !reflect.DeepEqual(d.Choices, []string{"prod", "preprod"}) {
+		t.Fatalf("Def(ENV) = %+v", d)
+	}
+	if d := p.Def("ZONE"); !reflect.DeepEqual(d.Choices, []string{"z1", "z2"}) {
+		t.Fatalf("Def(ZONE) = %+v", d)
+	}
+	if d := p.Def("UNDECLARED"); d.Default != "" || d.Choices != nil {
+		t.Fatalf("Def(UNDECLARED) = %+v, want zero", d)
+	}
+}
+
+func TestLoadProfile_VarDefMissingNameErrors(t *testing.T) {
+	root := t.TempDir()
+	setupProfile(t, root, "p")
+	if err := os.WriteFile(filepath.Join(root, "p", "vars.yaml"), []byte("optional:\n  - default: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadProfile(root, "p"); err == nil {
+		t.Fatal("expected error for definition without a name")
+	}
+}
